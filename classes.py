@@ -1,23 +1,43 @@
 from .operators.install_dependencies import InstallDependencies
 from .operators.open_latest_version import OpenLatestVersion
-from .operators.dream_texture import DreamTexture
-from .operators.help_panel import HelpPanel
-from .operators.view_history import RecallHistoryEntry, SCENE_UL_HistoryList, ViewHistory
+from .operators.dream_texture import DreamTexture, ReleaseGenerator, HeadlessDreamTexture, CancelGenerator
+from .operators.view_history import SCENE_UL_HistoryList, RecallHistoryEntry, ClearHistory, RemoveHistorySelection, ExportHistorySelection, ImportPromptFile
 from .operators.inpaint_area_brush import InpaintAreaStroke
+from .operators.upscale import Upscale
 from .property_groups.dream_prompt import DreamPrompt
-
+from .ui.panels import dream_texture, history, upscaling, render_properties
 from .preferences import OpenGitDownloads, OpenHuggingFace, OpenWeightsDirectory, OpenRustInstaller, ValidateInstallation, StableDiffusionPreferences
-from .shader_menu import ShaderMenu
+
+from .ui.presets import DREAM_PT_AdvancedPresets, DREAM_MT_AdvancedPresets, AddAdvancedPreset, RestoreDefaultPresets
 
 CLASSES = (
+    HeadlessDreamTexture,
+    *render_properties.render_properties_panels(),
+    
     DreamTexture,
-    HelpPanel,
+    ReleaseGenerator,
+    CancelGenerator,
     OpenLatestVersion,
-    ShaderMenu,
-    ViewHistory,
-    RecallHistoryEntry,
-    InpaintAreaStroke,
     SCENE_UL_HistoryList,
+    RecallHistoryEntry,
+    ClearHistory,
+    RemoveHistorySelection,
+    ExportHistorySelection,
+    ImportPromptFile,
+    InpaintAreaStroke,
+    Upscale,
+
+    DREAM_PT_AdvancedPresets,
+    DREAM_MT_AdvancedPresets,
+    AddAdvancedPreset,
+    
+    # The order these are registered in matters
+    *dream_texture.dream_texture_panels(),
+    *upscaling.upscaling_panels(),
+    *history.history_panels(),
+
+    upscaling.OpenRealESRGANDownload,
+    upscaling.OpenRealESRGANWeightsDirectory
 )
 
 PREFERENCE_CLASSES = (
@@ -28,4 +48,5 @@ PREFERENCE_CLASSES = (
                       OpenWeightsDirectory,
                       OpenRustInstaller,
                       ValidateInstallation,
+                      RestoreDefaultPresets,
                       StableDiffusionPreferences)

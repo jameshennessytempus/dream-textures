@@ -13,31 +13,50 @@ sampler_options = [
     ("k_heun", "KHEUN", "", 8),
 ]
 
+precision_options = [
+    ('auto', 'Automatic', "", 1),
+    ('float32', 'Full Precision (float32)', "", 2),
+    ('autocast', 'Autocast', "", 3),
+    ('float16', 'Half Precision (float16)', "", 4),
+]
+
+def seed_clamp(self, ctx):
+    # clamp seed right after input to make it clear what the limits are
+    try:
+        s = str(max(0,min(int(float(self.seed)),2**32-1))) # float() first to make sure any seed that is a number gets clamped, not just ints
+        if s != self.seed:
+            self.seed = s
+    except (ValueError, OverflowError):
+        pass # will get hashed once generated
+
 attributes = {
     # Prompt
     "prompt_structure": EnumProperty(name="Preset", items=prompt_structures_items, description="Fill in a few simple options to create interesting images quickly"),
+    "use_negative_prompt": BoolProperty(name="Use Negative Prompt", default=False),
+    "negative_prompt": StringProperty(name="Negative Prompt", description="The model will avoid aspects of the negative prompt"),
 
     # Size
-    "width": IntProperty(name="Width", default=512),
-    "height": IntProperty(name="Height", default=512),
+    "width": IntProperty(name="Width", default=512, min=64, step=64),
+    "height": IntProperty(name="Height", default=512, min=64, step=64),
 
     # Simple Options
     "seamless": BoolProperty(name="Seamless", default=False, description="Enables seamless/tilable image generation"),
 
     # Advanced
     "show_advanced": BoolProperty(name="", default=False),
-    "seed": IntProperty(name="Seed", default=-1, description="Seed for RNG. Using the same seed will give the same image. A seed of '-1' will pick a random seed each time"),
-    "full_precision": BoolProperty(name="Full Precision", default=False, description="Whether to use full precision or half precision floats. Full precision is slower, but required by some GPUs"),
+    "random_seed": BoolProperty(name="Random Seed", default=True, description="Randomly pick a seed"),
+    "seed": StringProperty(name="Seed", default="0", description="Manually pick a seed", update=seed_clamp),
+    "precision": EnumProperty(name="Precision", items=precision_options, default='auto', description="Whether to use full precision or half precision floats. Full precision is slower, but required by some GPUs"),
     "iterations": IntProperty(name="Iterations", default=1, min=1, description="How many images to generate"),
     "steps": IntProperty(name="Steps", default=25, min=1),
-    "cfgscale": FloatProperty(name="CFG Scale", default=7.5, min=1, description="How strongly the prompt influences the image"),
-    "sampler": EnumProperty(name="Sampler", items=sampler_options, default=3),
-    "show_steps": BoolProperty(name="Show Steps", description="Displays intermediate steps in the Image Viewer. Disabling can speed up generation", default=True),
+    "cfg_scale": FloatProperty(name="CFG Scale", default=7.5, min=1, soft_min=1.01, description="How strongly the prompt influences the image"),
+    "sampler_name": EnumProperty(name="Sampler", items=sampler_options, default=3),
+    "show_steps": BoolProperty(name="Show Steps", description="Displays intermediate steps in the Image Viewer. Disabling can speed up generation", default=False),
 
     # Init Image
-    "use_init_img": BoolProperty(name="", default=False),
-    "use_inpainting": BoolProperty(name="", default=False),
-    "strength": FloatProperty(name="Strength", default=0.75, min=0, max=1),
+    "use_init_img": BoolProperty(name="Use Init Image", default=False),
+    "use_inpainting": BoolProperty(name="Use Inpainting", default=False),
+    "strength": FloatProperty(name="Strength", default=0.75, min=0, max=1, soft_min=0.01, soft_max=0.99),
     "fit": BoolProperty(name="Fit to width/height", default=True),
 }
 
@@ -73,7 +92,7 @@ def generate_prompt(self):
             tokens[segment.id] = getattr(self, 'prompt_structure_token_' + segment.id)
         else:
             tokens[segment.id] = next(x for x in segment.values if x[0] == enum_value)[1]
-    return structure.generate(dotdict(tokens))
+    return structure.generate(dotdict(tokens)) + (f" [{self.negative_prompt}]" if self.use_negative_prompt else "")
 
 def get_prompt_subject(self):
     structure = next(x for x in prompt_structures if x.id == self.prompt_structure)
@@ -82,5 +101,26 @@ def get_prompt_subject(self):
             return getattr(self, 'prompt_structure_token_' + segment.id)
     return self.generate_prompt()
 
+def get_seed(self):
+    import numpy
+    numpy.random.randn()
+    if self.random_seed:
+        return None # let stable diffusion automatically pick one
+    try:
+        return max(0,min(int(float(self.seed)),2**32-1)) # clamp int
+    except (ValueError, OverflowError):
+        h = hash(self.seed) # not an int, let's hash it!
+        if h < 0:
+            h = ~h
+        return (h & 0xFFFFFFFF) ^ (h >> 32) # 64 bit hash down to 32 bits
+
+def generate_args(self):
+    args = { key: getattr(self, key) for key in DreamPrompt.__annotations__ }
+    args['prompt'] = self.generate_prompt()
+    args['seed'] = self.get_seed()
+    return args
+
 DreamPrompt.generate_prompt = generate_prompt
 DreamPrompt.get_prompt_subject = get_prompt_subject
+DreamPrompt.get_seed = get_seed
+DreamPrompt.generate_args = generate_args
