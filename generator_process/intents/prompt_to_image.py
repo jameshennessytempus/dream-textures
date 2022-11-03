@@ -1,7 +1,7 @@
 from ..block_in_use import block_in_use
 from ..action import Action
 from ..intent import Intent
-from ..registrar import registrar
+from ..registrar import BackendTarget, registrar
 import sys
 import os
 
@@ -29,7 +29,7 @@ def prompt2image(self, args, step_callback, image_callback, info_callback, excep
         if action in [Action.STOPPED, Action.EXCEPTION]:
             return
 
-@registrar.intent_backend(Intent.PROMPT_TO_IMAGE)
+@registrar.intent_backend(Intent.PROMPT_TO_IMAGE, BackendTarget.LOCAL)
 def prompt_to_image(self):
     args = yield
     self.send_info("Importing Dependencies")
@@ -58,6 +58,18 @@ def prompt_to_image(self):
             self.send_action(Action.STEP_NO_SHOW, step=step)
 
     def preload_models():
+        import urllib
+        import ssl
+        urlopen = urllib.request.urlopen
+        def urlopen_decroator(func):
+            def urlopen(*args, **kwargs):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                return func(*args, **kwargs, context=ssl_context)
+            return urlopen
+        urllib.request.urlopen = urlopen_decroator(urllib.request.urlopen)
+
         tqdm = None
         try:
             from huggingface_hub.utils.tqdm import tqdm as hfh_tqdm
@@ -76,12 +88,12 @@ def prompt_to_image(self):
             self.send_info(f"Loading {model_name}")
 
         def update_decorator(original):
-            def update(self, n=1):
-                result = original(self, n)
+            def update(tqdm_self, n=1):
+                result = original(tqdm_self, n)
                 nonlocal current_model_name
-                frac = self.n / self.total
+                frac = tqdm_self.n / tqdm_self.total
                 percentage = int(frac * 100)
-                if self.n - self.last_print_n >= self.miniters:
+                if tqdm_self.n - tqdm_self.last_print_n >= tqdm_self.miniters:
                     self.send_info(f"Downloading {current_model_name} ({percentage}%)")
                 return result
             return update
@@ -105,11 +117,17 @@ def prompt_to_image(self):
         transformers.CLIPTokenizer.from_pretrained(clip_version)
         transformers.CLIPTextModel.from_pretrained(clip_version)
 
+        start_preloading("CLIP Segmentation")
+        from absolute_path import CLIPSEG_WEIGHTS_PATH
+        from clipseg_models.clipseg import CLIPDensePredT
+        CLIPDensePredT(version='ViT-B/16', reduce_dim=64)
+
         tqdm.update = old_update
+        urllib.request.urlopen = urlopen
     
     from transformers.utils.hub import TRANSFORMERS_CACHE
     model_paths = {'bert-base-uncased', 'openai--clip-vit-large-patch14'}
-    if any(not os.path.isdir(os.path.join(TRANSFORMERS_CACHE, f'models--{path}')) for path in model_paths):
+    if any(not os.path.isdir(os.path.join(TRANSFORMERS_CACHE, f'models--{path}')) for path in model_paths) or not os.path.exists(os.path.join(os.path.expanduser("~/.cache/clip"), 'ViT-B-16.pt')):
         preload_models()
 
     while True:
@@ -118,10 +136,30 @@ def prompt_to_image(self):
             # Reset the step count
             step = 0
 
-            if generator is None or generator.precision != (choose_precision(generator.device) if args['precision'] == 'auto' else args['precision']):
+            if generator is None or generator.precision != (choose_precision(generator.device) if args['precision'] == 'auto' else args['precision']) or generator.model_name != args['model']:
                 self.send_info("Loading Model")
+                from omegaconf import OmegaConf
+                def omegaconf_load(func):
+                    def load(path):
+                        if path == models_config:
+                            return OmegaConf.create({
+                                args['model']: {
+                                    "config": "stable_diffusion/configs/stable-diffusion/v1-inference.yaml",
+                                    "weights": f"weights/stable-diffusion-v1.4/{args['model']}",
+                                    "description": "Stable Diffusion inference model version 1.4",
+                                    "width": 512,
+                                    "height": 512
+                                }
+                            })
+                        else:
+                            return func(path)
+                    load.omegaconf_decorated = True
+                    return load
+                if not getattr(OmegaConf.load, 'omegaconf_decorated', False):
+                    OmegaConf.load = omegaconf_load(OmegaConf.load)
                 generator = Generate(
                     conf=models_config,
+                    model=args['model'],
                     precision=args['precision']
                 )
                 generator.free_gpu_mem = False # Not sure what this is for, and why it isn't a flag but read from Args()?
@@ -130,13 +168,36 @@ def prompt_to_image(self):
             self.send_info("Starting")
             
             tmp_stderr = sys.stderr = StringIO() # prompt2image writes exceptions straight to stderr, intercepting
-            generator.prompt2image(
-                # a function or method that will be called each step
-                step_callback=view_step,
-                # a function or method that will be called each time an image is generated
-                image_callback=image_writer,
-                **args
-            )
+            prompt_list = args['prompt'] if isinstance(args['prompt'], list) else [args['prompt']]
+            for prompt in prompt_list:
+                generator_args = args.copy()
+                generator_args['prompt'] = prompt
+                generator_args['seamless_axes'] = list(generator_args['seamless_axes'])
+                if args['init_img_action'] == 'inpaint' and args['inpaint_mask_src'] == 'prompt':
+                    generator_args['text_mask'] = (generator_args['text_mask'], generator_args['text_mask_confidence'])
+                else:
+                    generator_args['text_mask'] = None
+                if args['use_init_img'] and args['init_img_action'] == 'outpaint':
+                    args['fit'] = False
+                    # Extend the image in the specified directions
+                    from PIL import Image, ImageFilter
+                    init_img = Image.open(args['init_img'])
+                    extended_size = (init_img.size[0] + args['outpaint_left'] + args['outpaint_right'], init_img.size[1] + args['outpaint_top'] + args['outpaint_bottom'])
+                    extended_img = Image.new('RGBA', extended_size, (0, 0, 0, 0))
+                    blurred_fill = init_img.resize(extended_size).filter(filter=ImageFilter.GaussianBlur(radius=args['outpaint_blend']))
+                    blurred_fill.putalpha(0)
+                    extended_img.paste(blurred_fill, (0, 0))
+                    extended_img.paste(init_img, (args['outpaint_left'], args['outpaint_top']))
+                    extended_img.save(generator_args['init_img'], 'png')
+                    generator_args['width'] = extended_size[0]
+                    generator_args['height'] = extended_size[1]
+                generator.prompt2image(
+                    # a function or method that will be called each step
+                    step_callback=view_step,
+                    # a function or method that will be called each time an image is generated
+                    image_callback=image_writer,
+                    **generator_args
+                )
             if tmp_stderr.tell() > 0:
                 tmp_stderr.seek(0)
                 s = tmp_stderr.read()
@@ -155,4 +216,77 @@ def prompt_to_image(self):
             pass
         finally:
             sys.stderr = self.stderr
+        args = yield
+
+@registrar.intent_backend(Intent.PROMPT_TO_IMAGE, BackendTarget.STABILITY_SDK)
+def prompt_to_image_stability_sdk(self):
+    args = yield
+    self.send_info("Importing Dependencies")
+
+    from stability_sdk import client, interfaces
+    from PIL import Image
+    import io
+    import random
+    from multiprocessing.shared_memory import SharedMemory
+
+    # Some of these names are abbreviated.
+    algorithms = client.algorithms.copy()
+    algorithms['k_euler_a'] = algorithms['k_euler_ancestral']
+    algorithms['k_dpm_2_a'] = algorithms['k_dpm_2_ancestral']
+
+    stability_inference = client.StabilityInference(key=args['dream_studio_key'])
+
+    def image_writer(image, seed, upscaled=False, first_seed=None):
+        # Only use the non-upscaled texture, as upscaling is a separate step in this addon.
+        if not upscaled:
+            self.send_action(Action.IMAGE, shared_memory_name=self.share_image_memory(image), seed=seed, width=image.width, height=image.height)
+
+    while True:
+        self.check_stop()
+
+        self.send_info("Generating...")
+        
+        seed = random.randrange(0, 4294967295) if args['seed'] is None else args['seed']
+        def realtime_viewport_init_image():
+            return None # Realtime viewport is not currently available.
+            if args['init_img_shared_memory'] is not None:
+                init_img_memory = SharedMemory(args['init_img_shared_memory'])
+                shared_init_img = Image.frombytes('RGBA', (args['init_img_shared_memory_width'], args['init_img_shared_memory_height']), init_img_memory.buf.tobytes())
+                shared_init_img = shared_init_img.resize((512, round(((shared_init_img.height / shared_init_img.width) * 512) / 64)*64))
+                init_img_memory.close()
+                return shared_init_img
+            return None
+        shared_init_img = realtime_viewport_init_image()
+        init_img = Image.open(args['init_img']) if args['init_img'] is not None and args['use_init_img'] else None
+        answers = stability_inference.generate(
+            prompt=args['prompt'],
+            init_image=shared_init_img if shared_init_img is not None and args['use_init_img'] else init_img,
+            mask_image=init_img.split()[-1] if init_img is not None and args['use_init_img'] and args['init_img_action'] == 'inpaint' else None,
+            width=shared_init_img.width if shared_init_img is not None else args['width'],
+            height=shared_init_img.height if shared_init_img is not None else args['height'],
+            start_schedule=1.0 * args['strength'],
+            end_schedule=0.01,
+            cfg_scale=args['cfg_scale'],
+            sampler=algorithms[args['sampler_name']],
+            steps=args['steps'],
+            seed=seed,
+            samples=args['iterations'],
+            # safety: bool = True,
+            # classifiers: Optional[generation.ClassifierParameters] = None,
+            # guidance_preset: generation.GuidancePreset = generation.GUIDANCE_PRESET_NONE,
+            # guidance_cuts: int = 0,
+            # guidance_strength: Optional[float] = None,
+            # guidance_prompt: Union[str, generation.Prompt] = None,
+            # guidance_models: List[str] = None,
+        )
+
+        for answer in answers:
+            for artifact in answer.artifacts:
+                if artifact.finish_reason == interfaces.gooseai.generation.generation_pb2.FILTER:
+                    self.send_exception(False, "Your request activated DreamStudio's safety filter. Please modify your prompt and try again.")
+                if artifact.type == interfaces.gooseai.generation.generation_pb2.ARTIFACT_IMAGE:
+                    response = Image.open(io.BytesIO(artifact.binary))
+                    image_writer(response, artifact.seed)
+        
+        self.send_info("Done")
         args = yield

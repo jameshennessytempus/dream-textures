@@ -13,13 +13,11 @@
 
 bl_info = {
     "name": "Dream Textures",
-    "author": "Carson Katri, Greg Richardson, Kevin C. Burke",
+    "author": "Dream Textures contributors",
     "description": "Use Stable Diffusion to generate unique textures straight from the shader editor.",
-    "warning": "Requires installation of Stable Diffusion model weights",
     "blender": (3, 0, 0),
-    "version": (0, 0, 7),
-    "location": "",
-    "warning": "",
+    "version": (0, 0, 8),
+    "location": "Image Editor -> Sidebar -> Dream",
     "category": "Paint"
 }
 
@@ -68,6 +66,7 @@ def register():
     check_for_updates()
 
     bpy.types.Scene.dream_textures_prompt = PointerProperty(type=DreamPrompt)
+    bpy.types.Scene.dream_textures_prompt_file = PointerProperty(type=bpy.types.Text)
     bpy.types.Scene.init_img = PointerProperty(name="Init Image", type=bpy.types.Image)
     bpy.types.Scene.init_mask = PointerProperty(name="Init Mask", type=bpy.types.Image)
     def get_selection_preview(self):
@@ -77,9 +76,10 @@ def register():
         return ""
     bpy.types.Scene.dream_textures_history_selection = IntProperty(default=1)
     bpy.types.Scene.dream_textures_history_selection_preview = bpy.props.StringProperty(name="", default="", get=get_selection_preview, set=lambda _, __: None)
-    bpy.types.Scene.dream_textures_progress = bpy.props.IntProperty(name="Progress", default=0, min=0, max=0)
+    bpy.types.Scene.dream_textures_progress = bpy.props.IntProperty(name="", default=0, min=0, max=0)
     bpy.types.Scene.dream_textures_info = bpy.props.StringProperty(name="Info")
 
+    bpy.types.Scene.dream_textures_viewport_enabled = BoolProperty(name="Viewport Enabled", default=False)
     bpy.types.Scene.dream_textures_render_properties_enabled = BoolProperty(default=False)
     bpy.types.Scene.dream_textures_render_properties_prompt = PointerProperty(type=DreamPrompt)
     bpy.types.Scene.dream_textures_upscale_outscale = bpy.props.EnumProperty(name="Target Size", items=upscale_options)
