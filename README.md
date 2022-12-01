@@ -9,7 +9,7 @@
 * Quickly create variations on an existing texture
 * Re-style animations with the Cycles render pass
 * Run the models on your machine to iterate without slowdowns from a service
-
+# dream
 # Installation
 Download the [latest release](https://github.com/carson-katri/dream-textures/releases/latest) and follow the instructions there to get up and running.
 
