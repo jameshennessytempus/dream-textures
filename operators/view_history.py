@@ -10,11 +10,13 @@ class SCENE_UL_HistoryList(bpy.types.UIList):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             if item.prompt_structure_token_subject == "SCENE_UL_HistoryList_header":
                 layout.label(text="Subject")
+                layout.label(text="Seed")
                 layout.label(text="Size")
                 layout.label(text="Steps")
                 layout.label(text="Sampler")
             else:
                 layout.label(text=item.get_prompt_subject(), translate=False, icon_value=icon)
+                layout.label(text=f"{item.seed}", translate=False)
                 layout.label(text=f"{item.width}x{item.height}", translate=False)
                 layout.label(text=f"{item.steps} steps", translate=False)
                 layout.label(text=next(x for x in sampler_options if x[0] == item.sampler_name)[1], translate=False)
@@ -37,6 +39,25 @@ class RecallHistoryEntry(bpy.types.Operator):
         for prop in selection.__annotations__.keys():
             if hasattr(context.scene.dream_textures_prompt, prop):
                 setattr(context.scene.dream_textures_prompt, prop, getattr(selection, prop))
+            # when the seed of the promt is found in the available image datablocks, use that one in the open image editor
+            # note: when there is more than one image with the seed in it's name, do nothing. Same when no image with that seed is available.
+            if prop == 'hash':
+                hash_string = str(getattr(selection, prop))
+                existing_image = None
+                # accessing custom properties for image datablocks in Blender is still a bit cumbersome
+                for i in bpy.data.images:
+                    try:
+                        # this will fail for images without the dream_textures_hash custom property
+                        if i['dream_textures_hash'] == hash_string:
+                            existing_image = i
+                            break
+                    except:
+                        continue
+                if existing_image != None:
+                    for area in context.screen.areas:
+                        if area.type != 'IMAGE_EDITOR':
+                            continue
+                        area.spaces.active.image = existing_image
 
         return {"FINISHED"}
 
